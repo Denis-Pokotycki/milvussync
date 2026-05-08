@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Django
+*.sqlite3
+db.sqlite3
+
+# Runtime state (auto-generated, not source)
+sync_state.json
+
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Poetry
+# poetry.lock is intentionally committed for reproducible installs
+dist/
+*.egg-info/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model cache (HuggingFace downloads — can be gigabytes)
+.cache/
