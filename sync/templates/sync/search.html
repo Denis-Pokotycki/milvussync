@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Search — MilvusSync</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    body { font-size: 0.9rem; display: flex; flex-direction: column; }
+    .page-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .result-card { border-left: 3px solid transparent; }
+    .result-card.meili    { border-left-color: #0d6efd; }
+    .result-card.semantic { border-left-color: #198754; }
+    .result-card.hybrid   { border-left-color: #6f42c1; }
+    .rank-badge  { font-size: 0.7em; font-weight: 700; min-width: 24px; text-align: center; }
+    .score-badge { font-size: 0.7em; font-family: monospace; }
+    .cpv-pill    { font-size: 0.7em; background: #e9ecef; border-radius: 4px;
+                   padding: 1px 5px; display: inline-block; margin: 1px; }
+    .col-header  { font-weight: 600; font-size: 0.85rem; }
+    .panel-col   { min-width: 0; }
+    .title-text  { font-size: 0.85rem; }
+    .meta-row    { font-size: 0.75rem; color: #6c757d; }
+  </style>
+</head>
+<body class="bg-light" style="height:100vh">
+
+<nav class="navbar navbar-dark bg-dark px-3 position-relative d-flex align-items-center">
+  <a href="/" class="navbar-brand fw-bold d-flex align-items-center gap-2 text-decoration-none text-white">
+    <svg width="30" height="30" viewBox="0 0 30 30" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <line x1="15" y1="15" x2="4"  y2="5"  stroke="white" stroke-width="1.4" stroke-opacity="0.5"/>
+      <line x1="15" y1="15" x2="26" y2="5"  stroke="white" stroke-width="1.4" stroke-opacity="0.5"/>
+      <line x1="15" y1="15" x2="4"  y2="25" stroke="white" stroke-width="1.4" stroke-opacity="0.5"/>
+      <line x1="15" y1="15" x2="26" y2="25" stroke="white" stroke-width="1.4" stroke-opacity="0.5"/>
+      <line x1="15" y1="15" x2="15" y2="3"  stroke="white" stroke-width="1.4" stroke-opacity="0.5"/>
+      <circle cx="15" cy="15" r="3.5" fill="white"/>
+      <circle cx="4"  cy="5"  r="2.8" fill="#60a5fa"/>
+      <circle cx="26" cy="5"  r="2.8" fill="#34d399"/>
+      <circle cx="4"  cy="25" r="2.8" fill="#f472b6"/>
+      <circle cx="26" cy="25" r="2.8" fill="#a78bfa"/>
+      <circle cx="15" cy="3"  r="2.8" fill="#fbbf24"/>
+    </svg>
+    MilvusSync
+  </a>
+  <div class="d-flex gap-2 ms-auto">
+    <a href="/" class="btn btn-sm btn-outline-light">Milvus</a>
+    <a href="/postgres/" class="btn btn-sm btn-outline-light">PostgreSQL</a>
+    <a href="/search/" class="btn btn-sm btn-primary">Search</a>
+    <a href="/pipeline/" class="btn btn-sm btn-warning text-dark">Pipeline</a>
+  </div>
+</nav>
+
+<div class="page-content bg-light">
+<div class="container-fluid py-4 px-4 d-flex flex-column" style="flex:1;min-height:0;overflow:hidden">
+
+  <form method="get" action="/search/" class="mb-3">
+    <div class="input-group input-group-lg shadow-sm">
+      <input
+        type="text"
+        name="q"
+        class="form-control"
+        placeholder="Search tenders… e.g. software development, road construction"
+        value="{{ query|default:'' }}"
+        autofocus
+      >
+      <select name="limit" class="form-select" style="width:auto;flex:none">
+        <option value="5"  {% if limit == 5  %}selected{% endif %}>Top 5</option>
+        <option value="10" {% if limit == 10 %}selected{% endif %}>Top 10</option>
+        <option value="15" {% if limit == 15 %}selected{% endif %}>Top 15</option>
+        <option value="20" {% if limit == 20 %}selected{% endif %}>Top 20</option>
+      </select>
+      <button type="submit" class="btn btn-primary px-4">Search</button>
+    </div>
+  </form>
+
+  <div style="flex:1;overflow-y:auto;min-height:0;padding-bottom:1rem">
+
+  {% if error %}
+  <div class="alert alert-danger">{{ error }}</div>
+  {% endif %}
+
+  {% if query %}
+
+  <div class="d-flex gap-3 mb-3 flex-wrap align-items-center">
+    <span class="badge bg-primary bg-opacity-75">Meilisearch {{ elapsed.meili|floatformat:"-2"|default:"—" }} ms</span>
+    <span class="badge bg-success bg-opacity-75">ANN {{ elapsed.ann|floatformat:"-2"|default:"—" }} ms{% if not model_ready %} (loading…){% endif %}</span>
+    <span class="badge bg-warning text-dark">Rerank {{ elapsed.rerank|floatformat:"-2"|default:"—" }} ms{% if not reranker_ready %} (loading…){% endif %}</span>
+    <span class="badge text-white" style="background:#6f42c1">RRF {{ elapsed.rrf|floatformat:"-2"|default:"—" }} ms</span>
+    <span class="badge bg-dark">Total {{ elapsed.total|floatformat:"-2"|default:"—" }} ms</span>
+    <span class="text-muted small">query: <em>{{ query }}</em>{% if candidate_limit %} &nbsp;·&nbsp; {{ candidate_limit }} ANN → rerank → top {{ limit }}{% endif %}</span>
+  </div>
+
+  <div class="row g-3">
+
+    <!-- Meilisearch keyword column -->
+    <div class="col-lg-4 panel-col">
+      <div class="card border-0 shadow-sm h-100">
+        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+          <span class="col-header">Meilisearch Keyword</span>
+          <span class="badge bg-white text-primary">{{ meili_results|length }} results</span>
+        </div>
+        <div class="card-body p-2">
+          {% for r in meili_results %}
+          <div class="result-card meili card mb-2 border-0 shadow-sm">
+            <div class="card-body py-2 px-3">
+              <div class="d-flex align-items-center gap-2 mb-1">
+                <span class="badge bg-secondary rank-badge">#{{ forloop.counter }}</span>
+                <span class="score-badge badge bg-primary bg-opacity-10 text-primary">{{ r.meili_score }}</span>
+                {% include "sync/_lang_badge.html" with lang=r.language_code only %}
+              </div>
+              <div class="title-text fw-semibold" title="{{ r.title }}">{{ r.title|truncatechars:90 }}</div>
+              <div class="meta-row mt-1">
+                <code style="font-size:0.7em">{{ r.pk }}</code>
+                {% if r.nut_code %} · {{ r.nut_code }}{% endif %}
+                {% if r.estimated_total_value %} · €{{ r.estimated_total_value|floatformat:0 }}{% endif %}
+              </div>
+              {% if r.cpv_codes %}
+              <div class="mt-1">{% for cpv in r.cpv_codes %}<span class="cpv-pill">{{ cpv }}</span>{% endfor %}</div>
+              {% endif %}
+              <div class="meta-row mt-1">
+                {{ r.publication_date|default:"" }}{% if r.closing_date %} → {{ r.closing_date }}{% endif %}
+              </div>
+            </div>
+          </div>
+          {% empty %}
+          <div class="text-center text-muted py-4">No Meilisearch matches</div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Semantic (BGE + Reranker) column -->
+    <div class="col-lg-4 panel-col">
+      <div class="card border-0 shadow-sm h-100">
+        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+          <span class="col-header">Semantic (BGE + Reranker)</span>
+          <span class="badge bg-white text-success">{{ semantic_results|length }} results</span>
+        </div>
+        <div class="card-body p-2">
+          {% for r in semantic_results %}
+          <div class="result-card semantic card mb-2 border-0 shadow-sm">
+            <div class="card-body py-2 px-3">
+              <div class="d-flex align-items-center gap-2 mb-1">
+                <span class="badge bg-secondary rank-badge">#{{ forloop.counter }}</span>
+                <span class="score-badge badge bg-success bg-opacity-10 text-success" title="cross-encoder rerank score">{{ r.rerank_score|floatformat:4 }}</span>
+                {% include "sync/_lang_badge.html" with lang=r.language_code only %}
+              </div>
+              <div class="title-text fw-semibold" title="{{ r.title }}">{{ r.title|truncatechars:90 }}</div>
+              <div class="meta-row mt-1">
+                <code style="font-size:0.7em">{{ r.pk }}</code>
+                {% if r.nut_code %} · {{ r.nut_code }}{% endif %}
+                {% if r.estimated_total_value %} · €{{ r.estimated_total_value|floatformat:0 }}{% endif %}
+              </div>
+              {% if r.cpv_codes %}
+              <div class="mt-1">{% for cpv in r.cpv_codes %}<span class="cpv-pill">{{ cpv }}</span>{% endfor %}</div>
+              {% endif %}
+              <div class="meta-row mt-1">
+                {{ r.publication_date|default:"" }}{% if r.closing_date %} → {{ r.closing_date }}{% endif %}
+              </div>
+            </div>
+          </div>
+          {% empty %}
+          <div class="text-center text-muted py-4">No semantic matches</div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Hybrid RRF column -->
+    <div class="col-lg-4 panel-col">
+      <div class="card border-0 shadow-sm h-100">
+        <div class="card-header text-white d-flex justify-content-between align-items-center" style="background:#6f42c1">
+          <span class="col-header">Hybrid RRF</span>
+          <span class="badge bg-white" style="color:#6f42c1">{{ hybrid_results|length }} results</span>
+        </div>
+        <div class="card-body p-2">
+          {% for r in hybrid_results %}
+          <div class="result-card hybrid card mb-2 border-0 shadow-sm">
+            <div class="card-body py-2 px-3">
+              <div class="d-flex align-items-center gap-2 mb-1">
+                <span class="badge bg-secondary rank-badge">#{{ forloop.counter }}</span>
+                <span class="score-badge badge text-white" style="background:#6f42c1!important" title="RRF score = Σ 1/(60 + rank)">{{ r.rrf_score }}</span>
+                {% include "sync/_lang_badge.html" with lang=r.language_code only %}
+              </div>
+              <div class="title-text fw-semibold" title="{{ r.title }}">{{ r.title|truncatechars:90 }}</div>
+              <div class="meta-row mt-1">
+                <code style="font-size:0.7em">{{ r.pk }}</code>
+                {% if r.nut_code %} · {{ r.nut_code }}{% endif %}
+                {% if r.estimated_total_value %} · €{{ r.estimated_total_value|floatformat:0 }}{% endif %}
+              </div>
+              {% if r.cpv_codes %}
+              <div class="mt-1">{% for cpv in r.cpv_codes %}<span class="cpv-pill">{{ cpv }}</span>{% endfor %}</div>
+              {% endif %}
+              <div class="meta-row mt-1">
+                {{ r.publication_date|default:"" }}{% if r.closing_date %} → {{ r.closing_date }}{% endif %}
+              </div>
+            </div>
+          </div>
+          {% empty %}
+          <div class="text-center text-muted py-4">No hybrid matches</div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  {% else %}
+  <div class="text-center py-5 text-muted">
+    <div style="font-size:3rem">🔍</div>
+    <div class="mt-2 fs-5">Enter a query to compare Meilisearch, semantic, and hybrid search</div>
+    <div class="small mt-1">{{ count|default:"0" }} tender translations indexed</div>
+  </div>
+  {% endif %}
+
+  </div>
+</div>
+</div>
+</body>
+</html>

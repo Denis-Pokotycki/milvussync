@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pipeline — MilvusSync</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <meta http-equiv="refresh" content="10">
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    body { font-size: 0.9rem; display: flex; flex-direction: column; }
+    .page-content { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+    .stage-card { border-top: 4px solid transparent; }
+    .stage-pg     { border-top-color: #0d6efd; }
+    .stage-pulsar { border-top-color: #fd7e14; }
+    .stage-milvus { border-top-color: #198754; }
+    .stat-big { font-size: 2rem; font-weight: 700; line-height: 1; }
+    .arrow-col { display: flex; align-items: center; justify-content: center; }
+    .arrow-icon { font-size: 1.8rem; color: #6c757d; }
+    .arrow-label { font-size: 0.72rem; font-weight: 600; color: #495057;
+                   white-space: nowrap; letter-spacing: 0.02em; }
+    .lang-bar { height: 6px; border-radius: 3px; background: #e9ecef; overflow: hidden; }
+    .lang-bar-fill { height: 100%; border-radius: 3px; }
+    .step-badge { width: 24px; height: 24px; border-radius: 50%;
+                  display: inline-flex; align-items: center; justify-content: center;
+                  font-weight: 700; font-size: 0.75rem; flex-shrink: 0; }
+    .command-block { background: #1e1e1e; color: #d4d4d4; border-radius: 6px;
+                     font-size: 0.8rem; padding: 8px 12px; font-family: monospace; }
+    .command-block .cmd-comment { color: #6a9955; }
+    .command-block .cmd-prompt  { color: #569cd6; user-select: none; }
+    .pulse { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    details summary { cursor: pointer; user-select: none; }
+    details summary::-webkit-details-marker { display: none; }
+  </style>
+</head>
+<body class="bg-light" style="height:100vh">
+
+<!-- ── Navbar ──────────────────────────────────────────────────────────────── -->
+<nav class="navbar navbar-dark bg-dark px-3 position-relative d-flex align-items-center">
+  <a href="/" class="navbar-brand fw-bold d-flex align-items-center gap-2 text-decoration-none text-white">
+    <svg width="30" height="30" viewBox="0 0 30 30" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <line x1="15" y1="15" x2="4"  y2="5"  stroke="white" stroke-width="1.4" stroke-opacity="0.5"/>
+      <line x1="15" y1="15" x2="26" y2="5"  stroke="white" stroke-width="1.4" stroke-opacity="0.5"/>
+      <line x1="15" y1="15" x2="4"  y2="25" stroke="white" stroke-width="1.4" stroke-opacity="0.5"/>
+      <line x1="15" y1="15" x2="26" y2="25" stroke="white" stroke-width="1.4" stroke-opacity="0.5"/>
+      <line x1="15" y1="15" x2="15" y2="3"  stroke="white" stroke-width="1.4" stroke-opacity="0.5"/>
+      <circle cx="15" cy="15" r="3.5" fill="white"/>
+      <circle cx="4"  cy="5"  r="2.8" fill="#60a5fa"/>
+      <circle cx="26" cy="5"  r="2.8" fill="#34d399"/>
+      <circle cx="4"  cy="25" r="2.8" fill="#f472b6"/>
+      <circle cx="26" cy="25" r="2.8" fill="#a78bfa"/>
+      <circle cx="15" cy="3"  r="2.8" fill="#fbbf24"/>
+    </svg>
+    MilvusSync
+  </a>
+  <span class="position-absolute start-50 translate-middle-x text-white" style="font-size:0.8rem;opacity:0.7;pointer-events:none">Auto-Refresh Every 10 s</span>
+  <div class="d-flex gap-2 ms-auto">
+    <a href="/"          class="btn btn-sm btn-outline-light">Milvus</a>
+    <a href="/postgres/" class="btn btn-sm btn-outline-light">PostgreSQL</a>
+    <a href="/search/"   class="btn btn-sm btn-outline-light">Search</a>
+    <a href="/pipeline/" class="btn btn-sm btn-warning text-dark">Pipeline</a>
+  </div>
+</nav>
+
+<div class="page-content bg-light">
+<div class="container-fluid pt-3 pb-2 px-4 d-flex flex-column" style="flex:1;min-height:0">
+
+  <!-- ── Auto-sync status banner ───────────────────────────────────────────── -->
+  <div class="alert {% if autosync_running %}alert-success{% else %}alert-danger{% endif %} d-flex align-items-center gap-2 py-2 mb-2">
+    {% if autosync_running %}
+      <span class="pulse" style="font-size:0.9rem">&#9679;</span>
+      <strong>Auto-sync running</strong> &mdash; polls PostgreSQL every {{ autosync_interval }} s and syncs new rows directly to Milvus.
+    {% else %}
+      <span style="font-size:0.9rem">&#9679;</span>
+      <strong>Auto-sync stopped</strong> &mdash; restart the Django server to re-enable it.
+    {% endif %}
+  </div>
+
+  <!-- ── Overall progress bar ────────────────────────────────────────────── -->
+  <div class="card border-0 shadow-sm mb-2">
+    <div class="card-body py-2">
+      <div class="d-flex justify-content-between align-items-center mb-1">
+        <span class="fw-semibold">Overall Sync Progress</span>
+        <span class="text-muted small">{{ milvus_count }} / {{ pg_total }} rows synced to Milvus</span>
+      </div>
+      <div class="progress" style="height:14px">
+        <div class="progress-bar bg-success"
+             role="progressbar"
+             style="width:{{ synced_pct }}%"
+             aria-valuenow="{{ synced_pct }}"
+             aria-valuemin="0" aria-valuemax="100">
+          {% if synced_pct > 5 %}{{ synced_pct }}%{% endif %}
+        </div>
+      </div>
+      <div class="d-flex justify-content-between mt-1">
+        <span class="text-success small">&#10003; {{ milvus_count }} synced</span>
+        {% if pending > 0 %}
+        <span class="text-warning small">&#9679; {{ pending }} pending (&le;{{ autosync_interval }}s)</span>
+        {% else %}
+        <span class="text-success small fw-semibold">Fully synced</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 3 Stage cards ────────────────────────────────────────────────────── -->
+  <div class="row align-items-stretch g-0 mb-2" style="flex:1;min-height:0">
+
+    <!-- Stage 1: PostgreSQL -->
+    <div class="col-lg d-flex flex-column" style="min-height:0">
+      <div class="card stage-card stage-pg border-0 shadow-sm h-100" style="overflow:hidden">
+        <div class="card-body py-2 d-flex flex-column" style="overflow-y:auto">
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <span class="step-badge bg-primary text-white">1</span>
+            <span class="fw-semibold text-primary">PostgreSQL</span>
+            {% if pg_error %}
+              <span class="badge bg-danger ms-auto">Error</span>
+            {% else %}
+              <span class="badge bg-success ms-auto">OK</span>
+            {% endif %}
+          </div>
+
+          {% if pg_error %}
+            <div class="alert alert-danger py-2 small">{{ pg_error }}</div>
+          {% else %}
+            <div class="stat-big text-primary mb-1">{{ pg_total }}</div>
+            <div class="text-muted small mb-2">rows in <code>tender_translations_demo</code></div>
+
+            {% if pg_last_updated %}
+            <div class="small mb-2">
+              <span class="text-muted">Last updated:</span>
+              <code>{{ pg_last_updated|truncatechars:22 }}</code>
+            </div>
+            {% endif %}
+
+            {% if pg_by_lang %}
+            <div class="small text-muted mb-1">By language:</div>
+            {% for row in pg_by_lang %}
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <span class="badge
+                {% if row.language_code == 'en' %}bg-primary
+                {% elif row.language_code == 'it' %}bg-success
+                {% elif row.language_code == 'fr' %}bg-info text-dark
+                {% elif row.language_code == 'de' %}bg-warning text-dark
+                {% elif row.language_code == 'es' %}bg-danger
+                {% elif row.language_code == 'pl' %}bg-secondary
+                {% elif row.language_code == 'nl' %}bg-dark
+                {% elif row.language_code == 'pt' %}bg-success
+                {% elif row.language_code == 'ro' %}bg-danger
+                {% elif row.language_code == 'cs' %}bg-primary
+                {% else %}bg-secondary{% endif %}
+                " style="min-width:28px;font-size:0.65rem">{{ row.language_code }}</span>
+              <div class="lang-bar flex-grow-1">
+                <div class="lang-bar-fill bg-primary" style="width:{% widthratio row.cnt pg_total 100 %}%"></div>
+              </div>
+              <span class="text-muted" style="min-width:18px;text-align:right;font-size:0.8rem">{{ row.cnt }}</span>
+            </div>
+            {% endfor %}
+            {% endif %}
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Arrow 1 -->
+    <div class="col-auto arrow-col px-2">
+      <div class="text-center">
+        <div class="arrow-icon">&#8594;</div>
+        <div class="arrow-label">producer<br>Pulsar</div>
+      </div>
+    </div>
+
+    <!-- Stage 2: Pulsar -->
+    <div class="col-lg d-flex flex-column" style="min-height:0">
+      <div class="card stage-card stage-pulsar border-0 shadow-sm h-100">
+        <div class="card-body py-2">
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <span class="step-badge bg-warning text-dark">2</span>
+            <span class="fw-semibold text-warning">Pulsar</span>
+            {% if cursor_error %}
+              <span class="badge bg-warning text-dark ms-auto">No cursor</span>
+            {% else %}
+              <span class="badge bg-success ms-auto">OK</span>
+            {% endif %}
+          </div>
+
+          <div class="small mb-2">
+            <span class="text-muted">Topic:</span><br>
+            <code>{{ pulsar_topic }}</code>
+          </div>
+
+          <div class="small mb-2">
+            <span class="text-muted">Cursor (last synced at):</span><br>
+            {% if cursor_error %}
+              <span class="text-muted fst-italic">{{ cursor_error }}</span>
+            {% else %}
+              <code>{{ cursor_ts|truncatechars:28 }}</code>
+            {% endif %}
+          </div>
+
+          {% if pending == 0 and pg_total > 0 %}
+          <div class="alert alert-success py-2 small mb-2">
+            &#10003; All {{ pg_total }} rows published
+          </div>
+          {% elif pending > 0 %}
+          <div class="alert alert-warning py-2 small mb-2">
+            &#9888; {{ pending }} row(s) pending
+          </div>
+          {% endif %}
+
+          <hr class="my-2">
+          <div class="small d-flex align-items-center gap-2">
+            <span class="text-muted">Auto-sync:</span>
+            {% if autosync_running %}
+              <span class="badge bg-success">Running</span>
+              <span class="text-muted" style="font-size:0.75rem">Every {{ autosync_interval }}s</span>
+            {% else %}
+              <span class="badge bg-danger">Stopped</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Arrow 2 -->
+    <div class="col-auto arrow-col px-2">
+      <div class="text-center">
+        <div class="arrow-icon">&#8594;</div>
+        <div class="arrow-label">consumer<br>+ BGE</div>
+      </div>
+    </div>
+
+    <!-- Stage 3: Milvus -->
+    <div class="col-lg d-flex flex-column" style="min-height:0">
+      <div class="card stage-card stage-milvus border-0 shadow-sm h-100">
+        <div class="card-body py-2">
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <span class="step-badge bg-success text-white">3</span>
+            <span class="fw-semibold text-success">Milvus</span>
+            {% if milvus_healthy %}
+              <span class="badge bg-success ms-auto">Connected</span>
+            {% else %}
+              <span class="badge bg-danger ms-auto">Unreachable</span>
+            {% endif %}
+          </div>
+
+          {% if milvus_error %}
+            <div class="alert alert-danger py-2 small">{{ milvus_error }}</div>
+          {% else %}
+            <div class="stat-big text-success mb-1">{{ milvus_count }}</div>
+            <div class="text-muted small mb-2">vectors in <code>{{ collection }}</code></div>
+
+            <div class="small mb-2">
+              <span class="text-muted">Index:</span> HNSW · COSINE · 1024-dim<br>
+              <span class="text-muted">Model:</span> BAAI/bge-large-en-v1.5
+            </div>
+
+            {% if milvus_count == pg_total and pg_total > 0 %}
+            <div class="alert alert-success py-2 small mb-0">
+              &#10003; All {{ pg_total }} rows indexed — search is ready
+            </div>
+            {% elif milvus_count == 0 %}
+            <div class="alert alert-secondary py-2 small mb-0">
+              Waiting for first auto-sync pass
+            </div>
+            {% else %}
+            <div class="alert alert-info py-2 small mb-0">
+              {{ milvus_count }} / {{ pg_total }} indexed &mdash; {{ pending }} in flight
+            </div>
+            {% endif %}
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /.row -->
+
+  <!-- ── Setup (collapsed by default) ─────────────────────────────────────── -->
+  <details class="card border-0 shadow-sm">
+    <summary class="card-header bg-white fw-semibold d-flex align-items-center gap-2" style="list-style:none">
+      <span>&#9654;</span> Setup (one-time)
+    </summary>
+    <div class="card-body py-2">
+      <div class="row g-2">
+        <div class="col-md-6">
+          <div class="small fw-semibold mb-1">A — Seed PostgreSQL</div>
+          <div class="command-block">
+            <span class="cmd-comment"># create table + demo rows</span><br>
+            <span class="cmd-prompt">$</span> python manage.py setup_demo
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="small fw-semibold mb-1">B — Start server</div>
+          <div class="command-block">
+            <span class="cmd-comment"># auto-sync starts automatically</span><br>
+            <span class="cmd-prompt">$</span> python manage.py runserver
+          </div>
+        </div>
+      </div>
+    </div>
+  </details>
+
+</div>
+</div><!-- /.page-content -->
+</body>
+</html>
